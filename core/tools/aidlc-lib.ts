@@ -3385,8 +3385,8 @@ function treeGeneration(
   paths: string[],
   excludedPaths: string[] = [],
   // Below each requested path, leave out what is never source: dependency and
-  // cache directories, .NET outputs beside a project file, and tool byproduct
-  // files. A path the scan names itself is always read.
+  // cache directories, Python virtual environments, .NET outputs beside a
+  // project file, and tool byproduct files. A path the scan names itself is always read.
   skipGenerated = false,
 ): string | null {
   const normalizedPaths = [...new Set(paths.map(normalizeGenerationPath))];
@@ -3436,7 +3436,8 @@ function treeGeneration(
         const childPortable = portable === "." ? name : `${portable}/${name}`;
         const generatedDir = skipGenerated && (
           SOURCE_FINGERPRINT_HARD_EXCLUDED_DIRS.has(name) ||
-          (dotnetProject && SOURCE_FINGERPRINT_DOTNET_OUTPUT_NAMES.has(name))
+          (dotnetProject && SOURCE_FINGERPRINT_DOTNET_OUTPUT_NAMES.has(name)) ||
+          holdsPythonVenv(join(absPath, name))
         );
         const generatedFile = skipGenerated && sourceFingerprintHardExcludedFile(name);
         if (!visit(join(absPath, name), childPortable, generatedDir, generatedFile)) return false;
@@ -20100,6 +20101,7 @@ const SOURCE_FINGERPRINT_HARD_EXCLUDED_NAMES = [
   ".venv",
   ".vs",
   "__pycache__",
+  "htmlcov",
   "node_modules",
   "venv",
 ] as const;
@@ -20120,10 +20122,14 @@ const SOURCE_FINGERPRINT_HARD_EXCLUDED_DIRS = new Set<string>(
 // source keeps a sanctioned escape. The same goes for the other files an OS or
 // editor drops beside source (Windows `Thumbs.db` and `desktop.ini`, vim swap
 // files, `~` backups): nobody authored them, so a stray one is not drift.
+// `coverage.xml` is the Cobertura report `pytest --cov-report=xml` and
+// `coverage xml` rewrite at the workspace root on every run; its `.xml`
+// extension would otherwise bind it like source.
 const SOURCE_FINGERPRINT_HARD_EXCLUDED_FILES = new Set<string>([
   ".DS_Store",
   ".coverage",
   "Thumbs.db",
+  "coverage.xml",
   "desktop.ini",
 ]);
 // vim's first swap names (.swp, .swo, .swn, .swm) and editor `~` backups. The
@@ -20136,8 +20142,25 @@ function sourceFingerprintHardExcludedFile(name: string): boolean {
     SOURCE_FINGERPRINT_EDITOR_ARTIFACT_RE.test(name)
   );
 }
-// The one directory the walk used to descend into and now leaves out.
+// The flat directories the walk used to descend into and now leaves out:
+// Python bytecode caches and coverage.py's HTML report (`htmlcov/`), both
+// rewritten by every test run.
 const SOURCE_FINGERPRINT_PYCACHE_DIR = "__pycache__";
+const SOURCE_FINGERPRINT_FLAT_EXCLUDED_SINCE_DIRS = new Set<string>([
+  SOURCE_FINGERPRINT_PYCACHE_DIR,
+  "htmlcov",
+]);
+// A Python virtual environment under any name (`.venv312`, `env`, `py311`):
+// `python -m venv` and virtualenv always write `pyvenv.cfg` at its root, so
+// that marker, not the directory name, says the tree is installed packages.
+const PYTHON_VENV_MARKER = "pyvenv.cfg";
+function holdsPythonVenv(dir: string): boolean {
+  try {
+    return lstatSync(join(dir, PYTHON_VENV_MARKER)).isFile();
+  } catch {
+    return false;
+  }
+}
 // AI-DLC's own settings at the workspace root are its configuration, like the
 // aidlc/ shell beside them, not the team's code: a setting recorded while a
 // stage runs is no source change that stage made.
@@ -20247,9 +20270,11 @@ export function _legacyWorkspaceSourceFingerprintForTests(current: string): stri
 
 /**
  * A recorded listing as today's walk would draw it: drop regular files that are
- * now excluded by name, or under `__pycache__`, and anything under a .NET output
- * directory beside a project file, when the current listing has no entry for
- * them (a registered path is still walked, so it still compares).
+ * now excluded by name, or under `__pycache__` or `htmlcov`, anything under a
+ * .NET output directory beside a project file, and anything under a Python
+ * virtual environment (a directory whose recorded entries hold `pyvenv.cfg`),
+ * when the current listing has no entry for them (a registered path is still
+ * walked, so it still compares).
  */
 export function recordedSourceListingUnderCurrentBoundary(
   recorded: ReadonlyMap<string, string>,
@@ -20269,9 +20294,22 @@ export function recordedSourceListingUnderCurrentBoundary(
     }
     return false;
   };
+  // The current walk leaves a virtual environment out whole, so its marker is
+  // only in the recorded listing.
+  const venvDirs: string[] = [];
+  for (const key of recorded.keys()) {
+    const slash = key.lastIndexOf("/");
+    if (slash > key.indexOf("\0") && key.slice(slash + 1) === PYTHON_VENV_MARKER && !current.has(key)) {
+      venvDirs.push(key.slice(0, slash + 1));
+    }
+  }
+  const underPythonVenv = (key: string): boolean => venvDirs.some((dir) => key.startsWith(dir));
   const kept: WorkspaceSourceListing = new Map();
   for (const [key, entry] of recorded) {
-    if (!current.has(key) && (sourcePathExcludedSinceRecorded(key, entry) || underDotnetOutput(key))) continue;
+    if (
+      !current.has(key) &&
+      (sourcePathExcludedSinceRecorded(key, entry) || underDotnetOutput(key) || underPythonVenv(key))
+    ) continue;
     kept.set(key, entry);
   }
   return kept;
@@ -20284,7 +20322,7 @@ function sourcePathExcludedSinceRecorded(key: string, entry: string): boolean {
   const parts = path.split("/");
   return (
     sourceFingerprintHardExcludedFile(parts[parts.length - 1]) ||
-    parts.slice(0, -1).includes(SOURCE_FINGERPRINT_PYCACHE_DIR) ||
+    parts.slice(0, -1).some((part) => SOURCE_FINGERPRINT_FLAT_EXCLUDED_SINCE_DIRS.has(part)) ||
     // The current walk lists it wherever the shell rule does not apply, so a
     // recorded root settings file missing from it was left out by that rule.
     (separator <= 0 && aidlcRootSettingsExcluded(path, true))
@@ -22381,8 +22419,8 @@ function filesystemSourceIdentity(
     }
     legacyInserts.push({ at: lines.length, line: `file:${rel}:${executable ? "x" : "-"}=${sha}` });
   };
-  // `__pycache__` holds flat compiled files; anything else in it is not
-  // reproduced, and old evidence then compares as it always did.
+  // `__pycache__` and `htmlcov` hold flat generated files; anything else in
+  // them is not reproduced, and old evidence then compares as it always did.
   const legacyPycache = (dir: string, rel: string): void => {
     if (legacyUnavailable) return;
     let entries: Dirent[];
@@ -22833,10 +22871,26 @@ function filesystemSourceIdentity(
           if (entry.isSymbolicLink()) {
             excludedSymlinkPathspecs.add(`:(top,literal)${childSnapshotRel}`);
           }
-          if (entry.name === SOURCE_FINGERPRINT_PYCACHE_DIR && recordIdentity && !sourceOnly && !registeredOnly) {
+          if (
+            SOURCE_FINGERPRINT_FLAT_EXCLUDED_SINCE_DIRS.has(entry.name) &&
+            recordIdentity && !sourceOnly && !registeredOnly
+          ) {
             if (entry.isSymbolicLink()) legacyUnavailable = true;
             else legacyPycache(join(dir, entry.name), childRel);
           }
+          continue;
+        }
+        // A virtual environment under a name the list above does not carry.
+        // The earlier walk followed its interpreter symlinks out of the tree,
+        // so its value is not rebuilt: old evidence compares as it always did,
+        // while recorded listings drop the tree (recordedSourceListingUnderCurrentBoundary).
+        if (
+          entry.isDirectory() &&
+          holdsPythonVenv(join(dir, entry.name)) &&
+          !registeredPathRelevant(childRegistryRel)
+        ) {
+          if (snapshotEligible) excludedOutputPathspecs.add(`:(top,literal)${childSnapshotRel}`);
+          if (recordIdentity && !sourceOnly && !registeredOnly) legacyUnavailable = true;
           continue;
         }
         if (

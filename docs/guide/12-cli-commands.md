@@ -2344,7 +2344,8 @@ scan will inspect. The source token uses the Git working-tree fingerprint when
 available and a byte-exact tree fallback outside Git. Below each requested
 path, both leave out .NET `bin/`, `obj/`, and `out/` beside a `.csproj`,
 `.fsproj`, or `.vbproj` file, and the fallback also skips dependency and cache
-directories such as `node_modules/` and tool byproduct files such as
+directories such as `node_modules/` and Python virtual environments (any
+directory holding `pyvenv.cfg`), and tool byproduct files such as
 `.DS_Store`, so a `dotnet build` during the scan does not invalidate it. A path
 named in `--paths` is always read. When the workspace root is the repository
 root, both also leave out AI-DLC's own files, as `codekb-scope-diff` does

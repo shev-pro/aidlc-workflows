@@ -80,6 +80,38 @@ describe("t400 byproduct files do not drift the source fingerprint", () => {
     expect(fingerprint(project)).toBe(before);
   });
 
+  test("coverage.xml and htmlcov/ rewritten by a coverage report are excluded", () => {
+    const project = sourceProject();
+    const before = fingerprint(project);
+    writeFileSync(join(project, "coverage.xml"), "<coverage line-rate=\"0.72\"/>\n");
+    mkdirSync(join(project, "htmlcov"), { recursive: true });
+    writeFileSync(join(project, "htmlcov", "index.html"), "<html>72%</html>\n");
+    expect(fingerprint(project)).toBe(before);
+    writeFileSync(join(project, "coverage.xml"), "<coverage line-rate=\"0.74\"/>\n");
+    writeFileSync(join(project, "htmlcov", "index.html"), "<html>74%</html>\n");
+    expect(fingerprint(project)).toBe(before);
+  });
+
+  test("a Python virtual environment under any name is excluded by its pyvenv.cfg", () => {
+    const project = sourceProject();
+    const before = fingerprint(project);
+    const site = join(project, ".venv312", "lib", "python3.12", "site-packages", "pkg");
+    mkdirSync(site, { recursive: true });
+    writeFileSync(join(project, ".venv312", "pyvenv.cfg"), "home = /usr/bin\n");
+    writeFileSync(join(site, "__init__.py"), "VERSION = 1\n");
+    expect(fingerprint(project)).toBe(before);
+    writeFileSync(join(site, "__init__.py"), "VERSION = 2\n");
+    expect(fingerprint(project)).toBe(before);
+  });
+
+  test("a directory without pyvenv.cfg stays source whatever its name", () => {
+    const project = sourceProject();
+    const before = fingerprint(project);
+    mkdirSync(join(project, "env"), { recursive: true });
+    writeFileSync(join(project, "env", "settings.py"), "DEBUG = False\n");
+    expect(fingerprint(project)).not.toBe(before);
+  });
+
   test("a real source change still drifts the fingerprint", () => {
     const project = sourceProject();
     const before = fingerprint(project);

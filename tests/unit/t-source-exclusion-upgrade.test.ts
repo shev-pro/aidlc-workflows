@@ -129,6 +129,38 @@ describe("t-source-exclusion-upgrade", () => {
     ]);
   });
 
+  test("evidence recorded with coverage.xml and htmlcov/ still matches when nothing changed", () => {
+    const dir = bareProject();
+    mkdirSync(join(dir, "src"));
+    mkdirSync(join(dir, "htmlcov"));
+    const files: Array<[string, string]> = [
+      ["coverage.xml", "<coverage/>\n"],
+      ["htmlcov/index.html", "<html></html>\n"],
+      ["src/main.ts", "export const main = 1;\n"],
+    ];
+    for (const [rel, body] of files) writeFileSync(join(dir, rel), body);
+    const state = workspaceSourceState(dir);
+    expect(state!.fingerprint).toBe(referenceFingerprint([["src/main.ts", "export const main = 1;\n"]]));
+    expect(sameWorkspaceSource(referenceFingerprint(files), state!.fingerprint)).toBe(true);
+  });
+
+  test("a recorded listing drops a virtual environment the walk now leaves out", () => {
+    const file = (n: string) => `100644 ${n.repeat(64)}`;
+    const recorded = new Map<string, string>([
+      ["\u0000src/main.py", file("a")],
+      ["\u0000.venv312/pyvenv.cfg", file("b")],
+      ["\u0000.venv312/lib/site-packages/pkg/__init__.py", file("c")],
+      ["\u0000.venv312/bin/python", `120000 ${"d".repeat(64)}`],
+      ["\u0000envs/settings.py", file("e")],
+    ]);
+    const current = new Map<string, string>([
+      ["\u0000src/main.py", file("a")],
+      ["\u0000envs/settings.py", file("e")],
+    ]);
+    const kept = recordedSourceListingUnderCurrentBoundary(recorded, current);
+    expect([...kept.keys()].sort()).toEqual(["\u0000envs/settings.py", "\u0000src/main.py"]);
+  });
+
   test("the raw diff filter keeps symlinks and registered paths, drops excluded regular files", () => {
     const z = (meta: string, path: string) => `${meta}\u0000${path}\u0000`;
     const oid = "1".repeat(40);

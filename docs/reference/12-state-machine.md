@@ -456,7 +456,11 @@ walk, independent of repository metadata and Git executable availability.
 Ordinary and ignored application bytes, external source-symlink targets, and
 workspace-roof files remain bound, apart from AI-DLC's own `aidlc.settings.json`
 and `aidlc.settings.local.json` there. Framework state, exact sensor caches, VCS
-metadata, dependency/cache directories or symlinks, unregistered
+metadata, dependency/cache directories or symlinks (including `__pycache__/`,
+coverage.py's `htmlcov/`, and any Python virtual environment, recognized by the
+`pyvenv.cfg` at its root whatever its name, such as `.venv312/`), test and OS
+byproduct files (`.coverage`, `.coverage.*`, `coverage.xml`, `.DS_Store`),
+unregistered
 `build/`, `coverage/`, `dist/`, `logs/`, `target/`, and `tmp/` directories or
 symlinks, and unregistered `bin/`, `obj/`, and `out/` directories or symlinks
 beside a `.csproj`, `.fsproj`, or `.vbproj` file (the .NET build outputs)
